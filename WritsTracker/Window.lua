@@ -2,7 +2,7 @@
 local ADDON, ns = ...
 
 local WT = ns.WT
-local ROW_H = 54
+local ROW_H = 68
 local WINDOW_W, WINDOW_H = 720, 520
 
 local main, scrollChild, rows = nil, nil, {}
@@ -130,20 +130,6 @@ local function StatusBadges(w, s)
     return table.concat(parts, " ")
 end
 
-local function ReagentText(w, s)
-    local v = s.variant
-    if not v or not v.reagents then return "" end
-    local parts = {}
-    for _, r in ipairs(v.reagents) do
-        local id, need = r[1], r[2]
-        local have = (s.reagentCounts and s.reagentCounts[id]) or 0
-        local name = ns.GetItemName(id) or ("item:" .. id)
-        local color = have >= need and "|cff33ff33" or "|cffff6060"
-        parts[#parts + 1] = ("%s%d/%d %s|r"):format(color, have, need, name)
-    end
-    return table.concat(parts, "|cff808080, |r")
-end
-
 local function ShowRecipeTooltip(self, w, s)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     local v = s.variant
@@ -158,7 +144,7 @@ local function ShowRecipeTooltip(self, w, s)
     GameTooltip:AddLine(("|cff33ff99Writ:|r %s"):format(w.name), 1, 1, 1)
     GameTooltip:AddLine(("Сдать: %s — %s"):format(w.npc or "?", w.zone or "?"), 0.8, 0.8, 0.8)
     GameTooltip:AddLine(("Тир: %s, предмет writ требует уровень %d"):format(w.tier or "?", w.writReqLevel or 1), 0.8, 0.8, 0.8)
-    GameTooltip:AddLine("Shift-клик — в аукцион • СКМ — waypoint • ЛКМ — выбрать", 0.5, 0.8, 1)
+    GameTooltip:AddLine("Клик по ингредиенту — его поиск в аукционе • СКМ — waypoint", 0.5, 0.8, 1)
     GameTooltip:Show()
 end
 
@@ -253,34 +239,84 @@ local function MakeRow(i)
     return row
 end
 
--- Shift-click по реагентам: отдельная невидимая кнопка поверх строки реагентов
--- не умеет делить текст; вместо этого реагенты кликабельны через выделение строки:
--- для простоты shift-клик по строке реагентов ищет ПЕРВЫЙ недостающий реагент.
-local function AttachReagentClick(row)
-    local btn = CreateFrame("Button", nil, row)
-    btn:SetPoint("TOPLEFT", row.reag, "TOPLEFT", -2, 2)
-    btn:SetPoint("BOTTOMRIGHT", row.reag, "BOTTOMRIGHT", 2, -2)
-    btn:RegisterForClicks("AnyUp")
-    btn:SetScript("OnClick", function(self)
-        local parent = self:GetParent()
-        local w, s = parent.writ, parent.state
-        if not w or not s or not IsShiftKeyDown() then return end
-        local v = s.variant
-        if not v or not v.reagents then return end
-        -- первый недостающий, иначе первый
-        local pick = v.reagents[1]
-        for _, r in ipairs(v.reagents) do
-            local have = (s.reagentCounts and s.reagentCounts[r[1]]) or 0
-            if have < r[2] then pick = r; break end
+-- Реагенты: каждый ингредиент — отдельная кнопка-чип (клик = поиск именно его).
+local REAG_MAX = 8
+
+local function MakeReagChip(row, idx)
+    local chip = CreateFrame("Button", nil, row)
+    chip:SetHeight(16)
+    chip:RegisterForClicks("AnyUp")
+    chip.text = chip:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    chip.text:SetPoint("LEFT", chip, "LEFT", 0, 0)
+    chip.text:SetJustifyH("LEFT")
+    chip:SetFontString(chip.text)
+    local hl = chip:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+    hl:SetBlendMode("ADD")
+    chip:SetScript("OnClick", function(self, button)
+        if not self.itemId then return end
+        if button == "LeftButton" then
+            -- клик по конкретному ингредиенту — ищем именно его
+            if IsShiftKeyDown() then
+                ns.InsertLink(ns.GetItemLink(self.itemId))
+            elseif ns.AuctionSearch(ns.GetItemName(self.itemId) or "") then
+                -- прямой поиск, если аукцион открыт
+            else
+                ns.InsertLink(ns.GetItemLink(self.itemId))
+            end
         end
-        if pick then ns.InsertLink(ns.GetItemLink(pick[1])) end
     end)
-    btn:SetScript("OnEnter", function(self)
-        local parent = self:GetParent()
-        if parent.writ then ShowRecipeTooltip(self, parent.writ, parent.state or {}) end
+    chip:SetScript("OnEnter", function(self)
+        if not self.itemId then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        pcall(GameTooltip.SetHyperlink, GameTooltip, "item:" .. self.itemId)
+        GameTooltip:AddLine("Клик — поиск этого ингредиента в аукционе", 0.5, 0.8, 1)
+        GameTooltip:Show()
     end)
-    btn:SetScript("OnLeave", GameTooltip_Hide)
-    row.reagBtn = btn
+    chip:SetScript("OnLeave", GameTooltip_Hide)
+    chip:Hide()
+    return chip
+end
+
+local function LayoutReagents(row, w, s)
+    row.reagChips = row.reagChips or {}
+    local v = s.variant
+    local reagents = v and v.reagents or {}
+    local x = 0
+    local rowWidth = row:GetWidth() - 8
+    for i = 1, math.max(#reagents, #row.reagChips) do
+        local chip = row.reagChips[i]
+        if i <= #reagents and i <= REAG_MAX then
+            if not chip then
+                chip = MakeReagChip(row, i)
+                row.reagChips[i] = chip
+            end
+            local r = reagents[i]
+            local id, need = r[1], r[2]
+            local have = (s.reagentCounts and s.reagentCounts[id]) or 0
+            local name = ns.GetItemName(id) or ("item:" .. id)
+            local color = have >= need and "|cff33ff33" or "|cffff6060"
+            chip.itemId = id
+            chip.text:SetText(("%s%d/%d %s|r"):format(color, have, need, name))
+            local tw = chip.text:GetStringWidth() + 4
+            -- перенос на следующую строку, если не влезает (макс 2 строки)
+            if x > 0 and x + tw > rowWidth and i <= 4 then
+                x = 0
+                chip.row2 = true
+            else
+                chip.row2 = false
+            end
+            chip:ClearAllPoints()
+            chip:SetPoint("TOPLEFT", row.reag, "TOPLEFT", x, chip.row2 and -14 or 0)
+            chip:SetWidth(tw)
+            chip:Show()
+            x = x + tw + 10
+        elseif chip then
+            chip.itemId = nil
+            chip:Hide()
+        end
+    end
 end
 
 function ns.UpdateCounts()
@@ -305,7 +341,6 @@ function ns.WindowRefresh()
         local row = rows[i]
         if not row then
             row = MakeRow(i)
-            AttachReagentClick(row)
             rows[i] = row
         end
         local s = state[w.writId] or {}
@@ -324,7 +359,8 @@ function ns.WindowRefresh()
         row.info:SetText(("%s%s|r • %s • %s%s|r %s"):format(
             zoneColor, w.zone or "?", w.npc or "?",
             TIER_COLOR[w.tier] or "", w.tier or "?", StatusBadges(w, s)))
-        row.reag:SetText(ReagentText(w, s))
+        row.reag:SetText("")
+        LayoutReagents(row, w, s)
         row.writBtn.writId = w.writId
         row.writBtn.icon:SetTexture(ns.GetItemIcon(w.writId))
         row:Show()
@@ -497,7 +533,7 @@ function ns.BuildWindow()
 
     local hint = main:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -32, 12)
-    hint:SetText("Shift — аукцион • СКМ — waypoint • ЛКМ — выбрать")
+    hint:SetText("Клик по ингредиенту — аукцион • Shift+клик по строке — предмет • СКМ — waypoint")
 
     ns.WindowRefresh()
 end
