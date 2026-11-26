@@ -210,9 +210,20 @@ ns.ScanBank = scanBank
 
 -- Пересчёт состояния всех writs.
 function ns.Refresh()
+    if ns.Pricing then ns.Pricing.BeginRefresh() end
     local profs = ns.GetPlayerProfessions()
     local active = ns.GetActiveQuests()
     local state = {}
+    -- кэш GetItemCount на один Refresh (реагенты повторяются между writs)
+    local countCache = {}
+    local function itemCount(id)
+        local c = countCache[id]
+        if c == nil then
+            c = ns.GetItemCount(id)
+            countCache[id] = c
+        end
+        return c
+    end
     for _, w in ipairs(ns.WRITS or {}) do
         local s = {}
         -- варианты рецепта (dual-prof writs): берём доступные персонажу
@@ -238,12 +249,12 @@ function ns.Refresh()
         s.zoneOk = ns.IsZoneAvailable(w)
         s.druidZone = ns.DRUID_ZONES[w.zone] == true
         -- writ-предмет в сумках/банке (для экономики: не надо покупать)
-        s.writCount = ns.GetItemCount(w.writId)
+        s.writCount = itemCount(w.writId)
         -- сколько реагентов в сумках+банке
         s.reagentCounts = {}
         if best.v.reagents then
             for _, r in ipairs(best.v.reagents) do
-                s.reagentCounts[r[1]] = ns.GetItemCount(r[1])
+                s.reagentCounts[r[1]] = itemCount(r[1])
             end
         end
         -- экономика (Auctionator)
@@ -292,12 +303,35 @@ local function pouchDelta()
     end
 end
 
+-- Троттлинг: BAG_UPDATE/QUEST_LOG_UPDATE летят пачками — не дёргаем Refresh
+-- на каждый, а коалесцируем в один пересчёт через 0.2с.
+local refreshPending = false
+local function scheduleRefresh()
+    if refreshPending then return end
+    refreshPending = true
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0.2, function()
+            refreshPending = false
+            ns.Refresh()
+            if ns.WindowRefresh then ns.WindowRefresh() end
+            if ns.Broker then ns.Broker.Update() end
+        end)
+    else
+        refreshPending = false
+        ns.Refresh()
+        if ns.WindowRefresh then ns.WindowRefresh() end
+    end
+end
+
 local function afterRefresh()
     if ns.WindowRefresh then ns.WindowRefresh() end
     if ns.Broker then ns.Broker.Update() end
-    if ns.MapPins and ns.MapPins.isEnabled() then
-        local ok, err = pcall(ns.MapPins.render)
-        if not ok then ns.MapPins.lastError = tostring(err) end
+    if ns.MapPins then
+        ns.MapPins.dirty = true
+        if ns.MapPins.isEnabled() then
+            local ok, err = pcall(ns.MapPins.render)
+            if not ok then ns.MapPins.lastError = tostring(err) end
+        end
     end
 end
 
@@ -404,9 +438,11 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "BAG_UPDATE" or event == "BAG_UPDATE_DELAYED" then
         pouchDelta()
         if bankOpen then scanBank() end
-        if ns.state and ns.UpdateCounts then ns.UpdateCounts() end
-        if ns.WindowRefresh then ns.WindowRefresh() end
-        if ns.Broker then ns.Broker.Update() end
+        scheduleRefresh()
+        return
+    end
+    if event == "QUEST_LOG_UPDATE" or event == "ITEM_DATA_LOAD_RESULT" then
+        scheduleRefresh()
         return
     end
     ns.Refresh()

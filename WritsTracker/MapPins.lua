@@ -3,7 +3,7 @@
 -- classic-фолбэк для старого WorldMapFrame без MapCanvas. Всё в pcall.
 local ADDON, ns = ...
 
-ns.MapPins = { mode = nil, lastError = nil }
+ns.MapPins = { mode = nil, lastError = nil, dirty = true }
 
 local PINS_MAJOR = "HereBeDragons-Pins-2.0"
 local worldPins, miniPins = {}, {}

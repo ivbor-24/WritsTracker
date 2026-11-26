@@ -2,8 +2,8 @@
 local ADDON, ns = ...
 
 local WT = ns.WT
-local ROW_H = 68
-local WINDOW_W, WINDOW_H = 720, 520
+local ROW_H = 72
+local WINDOW_W, WINDOW_H = 860, 600
 
 local main, scrollChild, rows = nil, nil, {}
 local filterWidgets = {}
@@ -92,6 +92,9 @@ local function FilteredWrits()
             local ra = ({ Journeyman = 75, Expert = 125, Artisan = 200 })[a.tier] or 0
             local rb = ({ Journeyman = 75, Expert = 125, Artisan = 200 })[b.tier] or 0
             if ra ~= rb then return ra > rb end
+        elseif sort == "level" then
+            local la, lb = a.writReqLevel or 0, b.writReqLevel or 0
+            if la ~= lb then return la < lb end
         end
         local pa, pb = PROF_ORDER[a.prof] or 9, PROF_ORDER[b.prof] or 9
         if pa ~= pb then return pa < pb end
@@ -142,8 +145,10 @@ local function ShowRecipeTooltip(self, w, s)
     end
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine(("|cff33ff99Writ:|r %s"):format(w.name), 1, 1, 1)
+    local rep = ({ Journeyman = 75, Expert = 125, Artisan = 200 })[w.tier] or 0
+    GameTooltip:AddLine(("Репутация: |cff5fbf73+%d|r (%s)"):format(rep, w.tier or "?"), 0.8, 0.8, 0.8)
     GameTooltip:AddLine(("Сдать: %s — %s"):format(w.npc or "?", w.zone or "?"), 0.8, 0.8, 0.8)
-    GameTooltip:AddLine(("Тир: %s, предмет writ требует уровень %d"):format(w.tier or "?", w.writReqLevel or 1), 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(("Требует уровень %d (writ), скилл %d"):format(w.writReqLevel or 1, (s.variant and s.variant.learnedat) or w.learnedat or 0), 0.8, 0.8, 0.8)
     GameTooltip:AddLine("Клик по ингредиенту — его поиск в аукционе • СКМ — waypoint", 0.5, 0.8, 1)
     GameTooltip:Show()
 end
@@ -156,20 +161,20 @@ local function MakeRow(i)
     row:RegisterForClicks("AnyUp")
 
     local icon = row:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(28, 28)
-    icon:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -2)
+    icon:SetSize(32, 32)
+    icon:SetPoint("TOPLEFT", row, "TOPLEFT", 2, -4)
     row.icon = icon
 
     local title = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 6, -1)
+    title:SetPoint("TOPLEFT", icon, "TOPRIGHT", 8, -2)
     title:SetPoint("RIGHT", row, "RIGHT", -60, 0)
     title:SetJustifyH("LEFT")
     title:SetWordWrap(false)
     row.title = title
 
     local writBtn = CreateFrame("Button", nil, row)
-    writBtn:SetSize(20, 20)
-    writBtn:SetPoint("TOPRIGHT", row, "TOPRIGHT", -2, -2)
+    writBtn:SetSize(24, 24)
+    writBtn:SetPoint("TOPRIGHT", row, "TOPRIGHT", -4, -4)
     local wt = writBtn:CreateTexture(nil, "ARTWORK")
     wt:SetAllPoints()
     writBtn.icon = wt
@@ -190,18 +195,27 @@ local function MakeRow(i)
     row.writBtn = writBtn
 
     local info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    info:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
+    info:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -3)
     info:SetPoint("RIGHT", row, "RIGHT", -4, 0)
     info:SetJustifyH("LEFT")
     info:SetWordWrap(false)
     row.info = info
 
     local reag = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    reag:SetPoint("TOPLEFT", info, "BOTTOMLEFT", 0, -2)
+    reag:SetPoint("TOPLEFT", info, "BOTTOMLEFT", 0, -4)
     reag:SetPoint("RIGHT", row, "RIGHT", -4, 0)
     reag:SetJustifyH("LEFT")
     reag:SetWordWrap(false)
     row.reag = reag
+
+    -- разделитель между строками
+    local sep = row:CreateTexture(nil, "BACKGROUND")
+    sep:SetHeight(1)
+    sep:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+    sep:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+    sep:SetTexture("Interface\\Buttons\\WHITE8X8")
+    sep:SetVertexColor(1, 1, 1, 0.08)
+    row.sep = sep
 
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
@@ -333,44 +347,67 @@ function ns.UpdateCounts()
     end
 end
 
+-- Ленивый рендер: создаём/обновляем только видимые строки + запас.
+-- Полный список хранится в pendingList; строки за скроллом не трогаем.
+local pendingList = {}
+local VISIBLE_ROWS = 12  -- сколько строк влезает в окно + запас
+
+local function RenderRow(i, w, s)
+    local row = rows[i]
+    if not row then
+        row = MakeRow(i)
+        rows[i] = row
+    end
+    row.writ = w
+    row.state = s
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -(i - 1) * ROW_H - 2)
+    row:SetPoint("RIGHT", scrollChild, "RIGHT", -4, 0)
+    local v = s.variant
+    local craftId = v and v.creates and v.creates[1]
+    row.icon:SetTexture(ns.GetItemIcon(craftId))
+    local nameColor = s.known and "|cff33ff33" or "|cffc0c0c0"
+    local craftName = (craftId and ns.GetItemName(craftId)) or w.name:gsub("^Craftsman's Writ: ", "")
+    row.title:SetText(("%s%s|r |cff808080(%s)|r"):format(nameColor, craftName, PROF_LABEL[w.prof] or w.prof))
+    local zoneColor = s.zoneOk and "|cff71d5ff" or "|cffff6060"
+    row.info:SetText(("%s%s|r • %s • %s%s|r %s"):format(
+        zoneColor, w.zone or "?", w.npc or "?",
+        TIER_COLOR[w.tier] or "", w.tier or "?", StatusBadges(w, s)))
+    row.reag:SetText("")
+    LayoutReagents(row, w, s)
+    row.writBtn.writId = w.writId
+    row.writBtn.icon:SetTexture(ns.GetItemIcon(w.writId))
+    row:Show()
+end
+
+local function RenderVisibleRange()
+    if not main or not main:IsShown() then return end
+    local state = ns.state or {}
+    local scroll = WritsTrackerScroll
+    local offset = scroll and scroll:GetVerticalScroll() or 0
+    local first = math.max(1, math.floor(offset / ROW_H))
+    local last = math.min(#pendingList, first + VISIBLE_ROWS)
+    for i = first, last do
+        local w = pendingList[i]
+        if w then RenderRow(i, w, state[w.writId] or {}) end
+    end
+    -- скрыть строки вне диапазона
+    for i = 1, #rows do
+        if i < first or i > last then rows[i]:Hide() end
+    end
+end
+
 function ns.WindowRefresh()
     if not main or not main:IsShown() then return end
-    local list = FilteredWrits()
-    local state = ns.state or {}
-    for i, w in ipairs(list) do
-        local row = rows[i]
-        if not row then
-            row = MakeRow(i)
-            rows[i] = row
-        end
-        local s = state[w.writId] or {}
-        row.writ = w
-        row.state = s
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 4, -(i - 1) * ROW_H - 2)
-        row:SetPoint("RIGHT", scrollChild, "RIGHT", -4, 0)
-        local v = s.variant
-        local craftId = v and v.creates and v.creates[1]
-        row.icon:SetTexture(ns.GetItemIcon(craftId))
-        local nameColor = s.known and "|cff33ff33" or "|cffc0c0c0"
-        local craftName = (craftId and ns.GetItemName(craftId)) or w.name:gsub("^Craftsman's Writ: ", "")
-        row.title:SetText(("%s%s|r |cff808080(%s)|r"):format(nameColor, craftName, PROF_LABEL[w.prof] or w.prof))
-        local zoneColor = s.zoneOk and "|cff71d5ff" or "|cffff6060"
-        row.info:SetText(("%s%s|r • %s • %s%s|r %s"):format(
-            zoneColor, w.zone or "?", w.npc or "?",
-            TIER_COLOR[w.tier] or "", w.tier or "?", StatusBadges(w, s)))
-        row.reag:SetText("")
-        LayoutReagents(row, w, s)
-        row.writBtn.writId = w.writId
-        row.writBtn.icon:SetTexture(ns.GetItemIcon(w.writId))
-        row:Show()
-    end
-    for i = #list + 1, #rows do rows[i]:Hide() end
-    scrollChild:SetHeight(math.max(#list * ROW_H + 4, 1))
+    pendingList = FilteredWrits()
+    scrollChild:SetHeight(math.max(#pendingList * ROW_H + 4, 1))
     if main.count then
-        main.count:SetText(("Показано %d из %d"):format(#list, #(ns.WRITS or {})))
+        main.count:SetText(("Показано %d из %d"):format(#pendingList, #(ns.WRITS or {})))
     end
-    if ns.MapPins then
+    RenderVisibleRange()
+    -- пины пересоздаём только при смене фильтра/статуса, не каждый refresh
+    if ns.MapPins and ns.MapPins.dirty then
+        ns.MapPins.dirty = false
         local ok, err = pcall(ns.MapPins.render)
         if not ok then ns.MapPins.lastError = tostring(err) end
     end
@@ -387,6 +424,7 @@ local function AddCheck(parent, label, x, y, key, onChange)
     cb:SetScript("OnClick", function(self)
         db()[key] = self:GetChecked() and true or false
         if onChange then onChange() end
+        markPinsDirty()
         ns.WindowRefresh()
     end)
     filterWidgets[key] = cb
@@ -403,6 +441,7 @@ local function AddDropdown(parent, label, x, y, width, items, key)
     local function OnClick(self)
         db()[key] = self.value
         UIDropDownMenu_SetSelectedValue(dd, self.value)
+        markPinsDirty()
         ns.WindowRefresh()
     end
     UIDropDownMenu_Initialize(dd, function()
@@ -418,6 +457,11 @@ local function AddDropdown(parent, label, x, y, width, items, key)
     UIDropDownMenu_SetSelectedValue(dd, db()[key] or items[1][1])
     filterWidgets[key] = dd
     return dd
+end
+
+-- Пометить пины грязными при смене фильтров (пересоздаём только тогда)
+local function markPinsDirty()
+    if ns.MapPins then ns.MapPins.dirty = true end
 end
 
 function ns.BuildWindow()
@@ -449,51 +493,77 @@ function ns.BuildWindow()
     local close = CreateFrame("Button", nil, main, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", main, "TOPRIGHT", -4, -4)
 
-    -- Фильтры: строка 1
-    local fy = -36
-    AddDropdown(main, "Профессия", 12, fy, 110, {
+    -- ── Панель фильтров: 2 ряда дропдаунов, ровная сетка ──
+    -- Ряд 1: Профессия | Рецепт | Зона | Тир | Статус | Сортировка
+    local r1 = -38
+    local col = { 12, 152, 282, 412, 522, 652 }
+    AddDropdown(main, "Профессия", col[1], r1, 110, {
         { "auto", "Мои профессии" }, { "all", "Все" },
         { "Engineering", "Инжа" }, { "Leatherworking", "Кожевник" },
         { "Alchemy", "Алхимия" }, { "Blacksmithing", "Кузнец" }, { "Tailoring", "Портной" },
     }, "prof")
-    AddDropdown(main, "Рецепт", 160, fy, 90, {
+    AddDropdown(main, "Рецепт", col[2], r1, 90, {
         { "all", "Все" }, { "known", "Знаю" }, { "unknown", "Не знаю" },
     }, "known")
-    AddDropdown(main, "Зона по уровню", 290, fy, 100, {
+    AddDropdown(main, "Зона по уровню", col[3], r1, 100, {
         { "all", "Все" }, { "mine", "Мой уровень" }, { "notmine", "Не мой уровень" },
     }, "zone")
-    AddDropdown(main, "Сортировка", 430, fy, 100, {
-        { "prof", "Профессия" }, { "zone", "Зона" }, { "skill", "Скилл" },
-        { "name", "Имя" }, { "cpr", "Цена/реп" }, { "rep", "Репутация" },
-    }, "sort")
-    AddDropdown(main, "Тир", 560, fy, 80, {
+    AddDropdown(main, "Тир", col[4], r1, 80, {
         { "all", "Все" }, { "Journeyman", "Journeyman" }, { "Expert", "Expert" }, { "Artisan", "Artisan" },
     }, "tier")
-
-    -- Фильтры: строка 2
-    AddCheck(main, "Скрыть Moonglade (друиды)", 12, fy - 52, "hideDruid")
-    AddCheck(main, "Скрыть сданные сегодня", 200, fy - 52, "hideDone")
-    local pinsCb = AddCheck(main, "Пины на карте", 380, fy - 52, "pins", function()
-        if ns.MapPins then ns.MapPins.setEnabled(db().pins) end
-    end)
-    AddDropdown(main, "Статус", 560, fy - 50, 80, {
+    AddDropdown(main, "Статус", col[5], r1, 90, {
         { "all", "Все" }, { "ready", "Готовы" }, { "missing", "Не хватает" }, { "done", "Сданы" },
     }, "status")
+    AddDropdown(main, "Сортировка", col[6], r1, 110, {
+        { "prof", "Профессия" }, { "zone", "Зона" }, { "skill", "Скилл" },
+        { "name", "Имя" }, { "cpr", "Цена/реп" }, { "rep", "Репутация" },
+        { "level", "Уровень" },
+    }, "sort")
 
-    -- Кнопки: waypoint выбранного + shopping list
+    -- Ряд 2: чекбоксы слева, поиск справа
+    local r2 = r1 - 56
+    AddCheck(main, "Скрыть Moonglade (друиды)", col[1], r2, "hideDruid")
+    AddCheck(main, "Скрыть сданные сегодня", 230, r2, "hideDone")
+    AddCheck(main, "Пины на карте", 440, r2, "pins", function()
+        if ns.MapPins then ns.MapPins.setEnabled(db().pins) end
+    end)
+
+    local search = CreateFrame("EditBox", "WritsTrackerSearch", main, "InputBoxTemplate")
+    search:SetSize(220, 20)
+    search:SetPoint("TOPLEFT", main, "TOPLEFT", 600, r2 - 2)
+    search:SetAutoFocus(false)
+    search:SetScript("OnTextChanged", function(self)
+        db().text = self:GetText() or ""
+        markPinsDirty()
+        ns.WindowRefresh()
+    end)
+    search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    local searchLabel = main:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    searchLabel:SetPoint("BOTTOMLEFT", search, "TOPLEFT", 0, 3)
+    searchLabel:SetText("Поиск (имя/зона/NPC)")
+
+    -- Ряд 3: кнопки действий
+    local r3 = r2 - 30
     local wpBtn = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
-    wpBtn:SetSize(90, 22)
-    wpBtn:SetPoint("TOPLEFT", main, "TOPLEFT", 12, fy - 78)
+    wpBtn:SetSize(100, 22)
+    wpBtn:SetPoint("TOPLEFT", main, "TOPLEFT", col[1], r3)
     wpBtn:SetText("Waypoint")
     wpBtn:SetScript("OnClick", function()
         local sel = main.selectedWrit
         if sel and ns.Waypoint then ns.Waypoint.Set(sel) end
     end)
+    wpBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("Поставить маркер на точку сдачи выбранного writ")
+        GameTooltip:AddLine("Выбор: клик по строке. Или СКМ по строке.", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    wpBtn:SetScript("OnLeave", GameTooltip_Hide)
     main.wpBtn = wpBtn
 
     local shopBtn = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
-    shopBtn:SetSize(110, 22)
-    shopBtn:SetPoint("LEFT", wpBtn, "RIGHT", 6, 0)
+    shopBtn:SetSize(120, 22)
+    shopBtn:SetPoint("LEFT", wpBtn, "RIGHT", 8, 0)
     shopBtn:SetText("Купить (AH)")
     shopBtn:SetScript("OnClick", function()
         if ns.Shopping then ns.Shopping.CreateList() end
@@ -506,26 +576,27 @@ function ns.BuildWindow()
     end)
     shopBtn:SetScript("OnLeave", GameTooltip_Hide)
 
-    local search = CreateFrame("EditBox", "WritsTrackerSearch", main, "InputBoxTemplate")
-    search:SetSize(180, 20)
-    search:SetPoint("TOPLEFT", main, "TOPLEFT", 420, fy - 80)
-    search:SetAutoFocus(false)
-    search:SetScript("OnTextChanged", function(self)
-        db().text = self:GetText() or ""
+    local scanBtn = CreateFrame("Button", nil, main, "UIPanelButtonTemplate")
+    scanBtn:SetSize(100, 22)
+    scanBtn:SetPoint("LEFT", shopBtn, "RIGHT", 8, 0)
+    scanBtn:SetText("Обновить")
+    scanBtn:SetScript("OnClick", function()
+        ns.Refresh()
         ns.WindowRefresh()
+        if ns.Broker then ns.Broker.Update() end
     end)
-    search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    local searchLabel = main:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    searchLabel:SetPoint("BOTTOMLEFT", search, "TOPLEFT", 0, 2)
-    searchLabel:SetText("Поиск (имя/зона/NPC)")
 
-    -- Список
+    -- ── Список ──
     local scroll = CreateFrame("ScrollFrame", "WritsTrackerScroll", main, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", main, "TOPLEFT", 12, fy - 110)
-    scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -30, 30)
+    scroll:SetPoint("TOPLEFT", main, "TOPLEFT", 12, r3 - 32)
+    scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -30, 32)
     scrollChild = CreateFrame("Frame", nil, scroll)
     scrollChild:SetSize(WINDOW_W - 50, 1)
     scroll:SetScrollChild(scrollChild)
+    scroll:SetScript("OnVerticalScroll", function(self, offset)
+        -- ленивый рендер при прокрутке
+        RenderVisibleRange()
+    end)
 
     local count = main:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     count:SetPoint("BOTTOMLEFT", main, "BOTTOMLEFT", 14, 12)
@@ -533,7 +604,7 @@ function ns.BuildWindow()
 
     local hint = main:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -32, 12)
-    hint:SetText("Клик по ингредиенту — аукцион • Shift+клик по строке — предмет • СКМ — waypoint")
+    hint:SetText("Клик по ингредиенту — аукцион • Shift+клик — предмет • СКМ — waypoint")
 
     ns.WindowRefresh()
 end

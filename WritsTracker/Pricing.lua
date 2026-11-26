@@ -17,20 +17,42 @@ function P.IsAvailable()
     return a and type(a.GetAuctionPriceByItemID) == "function"
 end
 
+-- Кэш цен на кадр: Auctionator API дёргается один раз на предмет за Refresh,
+-- а не 5-8 раз на каждый writ (иначе ~1500 вызовов = фриз).
+local priceCache, ageCache = {}, {}
+local cacheGen = 0
+
+function P.BeginRefresh()
+    cacheGen = cacheGen + 1
+    priceCache, ageCache = {}, {}
+end
+
 function P.GetPrice(itemID)
+    if not itemID then return nil end
+    local c = priceCache[itemID]
+    if c and c.gen == cacheGen then return c.v end
     local a = api()
-    if not a or not itemID then return nil end
-    local ok, price = pcall(a.GetAuctionPriceByItemID, CALLER, itemID)
-    if ok and type(price) == "number" and price > 0 then return price end
-    return nil
+    local v = nil
+    if a then
+        local ok, price = pcall(a.GetAuctionPriceByItemID, CALLER, itemID)
+        if ok and type(price) == "number" and price > 0 then v = price end
+    end
+    priceCache[itemID] = { gen = cacheGen, v = v }
+    return v
 end
 
 function P.GetAge(itemID)
+    if not itemID then return nil end
+    local c = ageCache[itemID]
+    if c and c.gen == cacheGen then return c.v end
     local a = api()
-    if not a or not itemID or type(a.GetAuctionAgeByItemID) ~= "function" then return nil end
-    local ok, age = pcall(a.GetAuctionAgeByItemID, CALLER, itemID)
-    if ok and type(age) == "number" then return age end
-    return nil
+    local v = nil
+    if a and type(a.GetAuctionAgeByItemID) == "function" then
+        local ok, age = pcall(a.GetAuctionAgeByItemID, CALLER, itemID)
+        if ok and type(age) == "number" then v = age end
+    end
+    ageCache[itemID] = { gen = cacheGen, v = v }
+    return v
 end
 
 -- Награда writ: среднее из открытых Coin Pouch тира (SavedVariables), иначе статика гайда.
