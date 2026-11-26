@@ -1,0 +1,24 @@
+## Interface: 16001
+## Title: Writs Tracker
+## Notes: Craftsman's Writ dailies: known recipes, reagents, zone filters, shift-click to auction search, hand-in map pins, cost-per-rep, Bazooka broker
+## Author: ivbor + ZCode
+## Version: 0.3.0
+## SavedVariables: WritsTrackerDB
+## SavedVariablesPerCharacter: WritsTrackerCharDB
+## OptionalDeps: Auctionator, TomTom, Bazooka
+
+Libs\LibStub.lua
+Libs\CallbackHandler-1.0.lua
+Libs\HereBeDragons-2.0.lua
+Libs\HereBeDragons-Pins-2.0.lua
+Libs\LibDataBroker-1.1.lua
+
+WritsDB.lua
+Pricing.lua
+Daily.lua
+Core.lua
+MapPins.lua
+Broker.lua
+Tooltip.lua
+Shopping.lua
+Window.lua
